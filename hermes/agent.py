@@ -52,7 +52,7 @@ class HermesAgent:
                     "system",
                     "You are Hermes, an agent that solves user tasks while managing memory. "
                     "Use `stm_tool` for immediate context (Retain/Discard/Retrieve/Summary/Filter). "
-                    "Use `ltm_tool` for archived knowledge (Archive/Retrieve/Update/Delete). "
+                    "Use `ltm_tool` for long-term storage (add/Retrieve/Update/Delete/get/list/clear). "
                     "Choose memory operations deliberately based on task relevance.",
                 ),
                 ("human", "{input}"),
@@ -76,7 +76,7 @@ class HermesAgent:
             name="ltm_tool",
             description=(
                 "Operate on long-term memory. "
-                "Actions: archive, retrieve, update, delete."
+                "Actions: add, retrieve, update, delete, get, list, clear."
             ),
             func=self._ltm_tool,
         )
@@ -104,22 +104,56 @@ class HermesAgent:
 
     def _ltm_tool(
         self,
-        action: Literal["archive", "retrieve", "update", "delete"],
+        action: Literal["add", "retrieve", "update", "delete", "get", "list", "clear"],
         content: str = "",
         key: str = "",
         k: int = 5,
+        tags: Optional[List[str]] = None,
+        importance: float = 0.0,
+        meta: Optional[Dict[str, Any]] = None,
+        tags_any: Optional[List[str]] = None,
+        meta_filter: Optional[Dict[str, Any]] = None,
     ) -> str:
-        if action == "archive":
-            return self.ltm.archive(content)
+        if action == "add":
+            out = self.ltm.add(content=content, tags=tags, meta=meta, importance=importance)
+            return f"Added to LTM: {out.get('key')}" if out.get("ok") else f"Add failed: {out.get('error')}"
+        
         if action == "retrieve":
-            hits = self.ltm.retrieve(content, k=k)
+            out = self.ltm.retrieve(query=content, k=k, tags_any=tags_any, meta_filter=meta_filter)
+            hits = out.get("hits", []) if out.get("ok") else []
             if not hits:
                 return "No LTM matches."
-            return "\n".join(f"{h['key']}: {h['content']}" for h in hits)
+            total = out.get("total", len(hits))
+            lines = [f"Found {len(hits)}/{total} matches:"]
+            lines += [f"- {h['key']} (score={h['score']:.2f}): {h['content']}" for h in hits]
+            return "\n".join(lines)
+        
         if action == "update":
-            return self.ltm.update(key=key, content=content)
+            out = self.ltm.update(key=key, content=content, tags=tags, meta=meta, importance=importance)
+            return f"Updated LTM {key}" if out.get("ok") else f" Update failed: {out.get('error')}"
+        
         if action == "delete":
-            return self.ltm.delete(key=key)
+           out = self.ltm.delete(key=key)
+           return f"Deleted LTM {key}" if out.get("ok") else f"Delete failed: {out.get('error')}"
+        
+        if action == "get":
+            out = self.ltm.get(key=key)
+            if not out.get("ok"):
+                return f" Get failed: {out.get('error')}"
+            rec = out["record"]
+            return f"{rec['key']}: {rec['content']} | tags={rec.get('tags', [])} | importance={rec.get('importance', 0.0)}"
+
+        if action == "list":
+            out = self.ltm.list()
+            items = out.get("items", [])
+            if not items:
+                return "LTM is empty."
+            return "\n".join([f"- {it['key']}: {it['preview']} (tags={it.get('tags', [])})" for it in items])
+
+        if action == "clear":
+            out = self.ltm.clear()
+            return "Cleared LTM." if out.get("ok") else "Clear failed."
+
         return f"Unsupported LTM action: {action}"
 
     def run(self, task: str) -> str:
@@ -131,7 +165,7 @@ class HermesAgent:
 if __name__ == "__main__":
     agent = HermesAgent()
     query = (
-        "Remember that Miguel likes concise answers, archive project goal, "
+        "Remember that Miguel likes concise answers, add project goal, "
         "then summarize what you retained."
     )
     print(agent.run(query))
