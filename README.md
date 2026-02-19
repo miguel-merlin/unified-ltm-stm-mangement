@@ -15,3 +15,48 @@ Improvement ideas
 
 
 [Paper](https://arxiv.org/pdf/2601.01885)
+
+## Run The Application
+
+### 1. Install dependencies
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 2. Run Hermes agent (OpenAI backend)
+```bash
+python3 hermes/agent.py \
+  --llm_backend openai \
+  --api_key "$OPENAI_API_KEY" \
+  --model gpt-4o-mini \
+  --query "Remember that I prefer concise answers, then summarize."
+```
+
+### 3. Run Hermes agent (auto backend)
+`auto` uses `vllm` when CUDA GPU is available, otherwise falls back to `openai`.
+
+```bash
+python3 hermes/agent.py \
+  --llm_backend auto \
+  --api_key "$OPENAI_API_KEY" \
+  --query "Store my preference for concise answers."
+```
+
+### 4. Run with local vLLM (GPU required)
+
+Start vLLM server:
+```bash
+vllm serve Qwen/Qwen2.5-7B-Instruct --host 127.0.0.1 --port 8000
+```
+
+In another terminal:
+```bash
+python3 hermes/agent.py \
+  --llm_backend vllm \
+  --vllm_base_url http://127.0.0.1:8000/v1 \
+  --api_key EMPTY \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --query "Remember I like concise answers and summarize."
+```

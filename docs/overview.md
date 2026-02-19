@@ -35,3 +35,30 @@ The project measures success using:
 ---
 **Summary for Agents:**
 You are maintaining a system that treats memory management as a **trainable skill** rather than a hard-coded utility. Every time the agent interacts with the environment, it must also manage its internal state to ensure it doesn't lose track of vital information during long, complex tasks.
+
+## Running Hermes Locally
+
+Run with OpenAI:
+```bash
+python3 hermes/agent.py \
+  --llm_backend openai \
+  --api_key "$OPENAI_API_KEY" \
+  --model gpt-4o-mini \
+  --query "Remember that I prefer concise replies."
+```
+
+Run with local vLLM (GPU required):
+```bash
+# terminal 1
+vllm serve Qwen/Qwen2.5-7B-Instruct --host 127.0.0.1 --port 8000
+
+# terminal 2
+python3 hermes/agent.py \
+  --llm_backend vllm \
+  --vllm_base_url http://127.0.0.1:8000/v1 \
+  --api_key EMPTY \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --query "Store this preference and summarize."
+```
+
+Use `--llm_backend auto` to prefer vLLM when a CUDA GPU is available and otherwise fall back to OpenAI.
