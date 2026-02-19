@@ -37,25 +37,32 @@ class ShortTermMemory:
                 return f"Discarded from STM: {target}"
         return f"STM discard skipped; not found: {target}"
 
-    def retrieve(self, query: str, k: int = 5) -> List[str]:
-        scored = [
-            (_token_overlap_score(query, item), item) for item in list(self._buffer)
-        ]
+    def retrieve_memory(self, query: str, k: int = 3) -> List[str]:
+        """ Retrieves relevant memories and adds them to current context. """
+        scored = []
+        buff_list = list(self._buffer)
+
+        # Weighted formula for accounting recency and relevancy 
+        for i, item in enumerate(buff_list):
+            relevance = _token_overlap_score(query, item)
+            recent = (i + 1) / len(buff_list)
+            rank = (relevance * 0.8) + (recent * 0.2)
+            scored.append((rank, item))
+
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for score, item in scored if score > 0][:k]
 
-    def filter(self, keyword: str) -> List[str]:
+    def filter_context(self, keyword: str) -> List[str]:
+        """Filters out irrelevant or outdated content from the conversation context to improve task-solving efficiency."""
         key = keyword.lower().strip()
         return [item for item in self._buffer if key in item.lower()]
 
-    def summary(self) -> str:
+    def summary_context(self) -> str:
         if not self._buffer:
             return "STM is empty."
         head = list(self._buffer)[-5:]
         return " | ".join(head)
 
-    def as_list(self) -> List[str]:
-        return list(self._buffer)
 
 
 @dataclass
