@@ -1,5 +1,0 @@
-torch
-transformers
-datasets
-accelerate
-trl==0.27.2
