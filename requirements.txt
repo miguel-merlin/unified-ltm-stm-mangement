@@ -1,6 +1,14 @@
+numpy>=2.4.2
 torch==2.10.0
+torchvision==0.25.0
+torchaudio==2.10.0
+
+
 transformers==5.1.0
 trl==0.27.2
 datasets==4.5.0
 langchain==0.3.27
 langchain-openai==0.3.33
+
+chromadb==1.5.1
+sentence-transformers==5.2.3

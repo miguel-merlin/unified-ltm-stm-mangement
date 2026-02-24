@@ -1,7 +1,11 @@
-from collections import deque
 from dataclasses import dataclass, field
-from typing import Deque, Dict, List, Optional, Any
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+import chromadb
+
+from .embeddings import EmbeddingProvider, SentenceTransformerEmbedding
 
 
 def _now_iso() -> str:
@@ -16,51 +20,142 @@ def _token_overlap_score(query: str, text: str) -> float:
     return len(q & t) / max(len(q), 1)
 
 
+def _default_stm_collection():
+    """
+    Create an in-memory Chroma collection for ShortTermMemory.
+
+    Each STM instance gets its own ephemeral collection, scoped to the current
+    process and not persisted to disk.
+    """
+    if chromadb is None:
+        raise RuntimeError(
+            "chromadb is required for ShortTermMemory vector storage. "
+            "Install it or provide a custom collection."
+        )
+    client = chromadb.Client()
+    name = f"stm_{uuid4().hex}"
+    return client.create_collection(name=name)
+
+
 @dataclass
 class ShortTermMemory:
-    """Bounded in-memory context buffer (retain/discard/retrieve/summary)."""
+    """STM tools for managing short term memory."""
 
     capacity: int = 20
-    _buffer: Deque[str] = field(default_factory=deque)
+    embedder: Optional[EmbeddingProvider] = None
+    collection: Optional[Any] = field(default=None, repr=False)
+    # Local list of items to preserve ordering semantics and helper behaviors.
+    # Each entry is a dict with keys: "id", "content", "index".
+    _items: List[Dict[str, Any]] = field(default_factory=list, repr=False)
+    _next_index: int = field(default=0, repr=False)
+
+    def _ensure_embedder(self) -> EmbeddingProvider:
+        if self.embedder is None:
+            self.embedder = SentenceTransformerEmbedding()
+        return self.embedder
+
+    def _ensure_collection(self) -> Any:
+        if self.collection is None:
+            self.collection = _default_stm_collection()
+        return self.collection
 
     def retain(self, content: str) -> str:
-        if len(self._buffer) >= self.capacity:
-            self._buffer.popleft()
-        self._buffer.append(content.strip())
-        return f"Retained in STM. Size={len(self._buffer)}/{self.capacity}"
+        text = content.strip()
+
+        # Lazily initialize vector components when we first retain anything.
+        collection = self._ensure_collection()
+        embedder = self._ensure_embedder()
+
+        self._next_index += 1
+        doc_id = f"stm_{self._next_index}"
+
+        embedding = embedder.embed([text])[0]
+        collection.add(
+            ids=[doc_id],
+            embeddings=[embedding],
+            documents=[text],
+            metadatas=[{"index": self._next_index}],
+        )
+
+        self._items.append({"id": doc_id, "content": text, "index": self._next_index})
+
+        # Enforce bounded capacity by evicting the oldest items first.
+        while len(self._items) > self.capacity:
+            oldest = self._items.pop(0)
+            try:
+                collection.delete(ids=[oldest["id"]])
+            except Exception:
+                # Best-effort cleanup; STM semantics should not depend on delete success.
+                pass
+
+        return f"Retained in STM. Size={len(self._items)}/{self.capacity}"
 
     def discard(self, content: str) -> str:
         target = content.strip()
-        for item in list(self._buffer):
-            if item == target:
-                self._buffer.remove(item)
+        collection = self.collection
+
+        for idx, item in enumerate(list(self._items)):
+            if item["content"] == target:
+                removed = self._items.pop(idx)
+                if collection is not None:
+                    try:
+                        collection.delete(ids=[removed["id"]])
+                    except Exception:
+                        pass
                 return f"Discarded from STM: {target}"
         return f"STM discard skipped; not found: {target}"
 
     def retrieve_memory(self, query: str, k: int = 3) -> List[str]:
         """ Retrieves relevant memories and adds them to current context. """
-        scored = []
-        buff_list = list(self._buffer)
+        if not self._items:
+            return []
 
-        # Weighted formula for accounting recency and relevancy 
-        for i, item in enumerate(buff_list):
-            relevance = _token_overlap_score(query, item)
-            recent = (i + 1) / len(buff_list)
-            rank = (relevance * 0.8) + (recent * 0.2)
-            scored.append((rank, item))
+        collection = self._ensure_collection()
+        embedder = self._ensure_embedder()
+
+        query_emb = embedder.embed([query])[0]
+        # Use Chroma similarity search; we request up to k results but not more
+        # than we actually have stored.
+        n_results = min(k, len(self._items))
+        raw = collection.query(
+            query_embeddings=[query_emb],
+            n_results=n_results,
+            include=["documents", "distances", "metadatas"],
+        )
+
+        docs = raw.get("documents") or [[]]
+        dists = raw.get("distances") or [[]]
+        metas = raw.get("metadatas") or [[]]
+
+        # Chroma returns a list per query; we only passed a single query.
+        docs_q = docs[0] if docs else []
+        dists_q = dists[0] if dists else []
+        metas_q = metas[0] if metas else []
+
+        scored: List[tuple[float, str]] = []
+        for doc, dist, meta in zip(docs_q, dists_q, metas_q):
+            # Convert distance to a similarity-like value in (0, 1].
+            similarity = 1.0 / (1.0 + float(dist))
+
+            # Small recency bias using the insertion index stored in metadata.
+            index = float(meta.get("index", 0.0)) if isinstance(meta, dict) else 0.0
+            recency = index / float(self._next_index or 1)
+
+            rank = (similarity * 0.8) + (recency * 0.2)
+            scored.append((rank, str(doc)))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [item for score, item in scored if score > 0][:k]
+        return [item for score, item in scored][:k]
 
     def filter_context(self, keyword: str) -> List[str]:
         """Filters out irrelevant or outdated content from the conversation context to improve task-solving efficiency."""
         key = keyword.lower().strip()
-        return [item for item in self._buffer if key in item.lower()]
+        return [item["content"] for item in self._items if key in item["content"].lower()]
 
     def summary_context(self) -> str:
-        if not self._buffer:
+        if not self._items:
             return "STM is empty."
-        head = list(self._buffer)[-5:]
+        head = [item["content"] for item in self._items[-5:]]
         return " | ".join(head)
 
 
