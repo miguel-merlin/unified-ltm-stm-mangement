@@ -12,6 +12,7 @@ import argparse
 import random
 from dataclasses import dataclass
 from typing import Iterable, List
+from trl import GRPOConfig, GRPO Trainer
 
 
 def _require(pkg: str) -> None:
@@ -85,9 +86,11 @@ def build_dataset(prompts: Iterable[str]) -> Dataset:
 # --- Reward function --- 
 # Replace this with a task-specific reward for memory management.
 # Example here: reward outputs that include the keyword "MEMORY"
-# and keep responses concise.
+# and keep responses concise. ...
 
-def compute_reward(text: str) -> float:
+
+# Use the predefined version for training
+def compute_reward(text: str) -> float:    
     reward = 0.0
     if "memory" in text.lower():
         reward += 1.0
@@ -135,20 +138,18 @@ def main() -> None:
     dataset = build_dataset(prompts)
 
     
-    # Change after fully implementing GRPO
-    ppo_config = PPOConfig(
+    ppo_config = GRPOConfig(
         learning_rate=cfg.learning_rate,
         batch_size=cfg.batch_size,
         mini_batch_size=cfg.mini_batch_size,
     )
 
-    trainer = PPOTrainer(
+    trainer = GRPOTrainer(
         config=ppo_config,
         model=model,
         tokenizer=tokenizer,
         dataset=dataset,
     )
-    # -------------------------------------
 
     step = 0
     while step < cfg.max_steps:
