@@ -3,7 +3,7 @@
 This is a minimal, extensible script that:
 - loads an open-source causal LM
 - defines a simple RL task with a reward function
-- optimizes the LM with PPO (TRL)
+- optimizes the LM with PPO (for now) -> switch to GRPO
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ def _require(pkg: str) -> None:
         f"Missing dependency: {pkg}.\n"
         "Install with: pip install transformers datasets trl accelerate torch"
     )
-
 
 try:
     import torch
@@ -57,6 +56,7 @@ class TrainConfig:
     device: str | None = None
 
 
+# Load prompts through dataloader
 DEFAULT_PROMPTS = [
     "Summarize the user request in one sentence.",
     "Extract the key facts from the note.",
@@ -82,11 +82,10 @@ def build_dataset(prompts: Iterable[str]) -> Dataset:
     return Dataset.from_dict({"prompt": list(prompts)})
 
 
-# --- Reward function ---
+# --- Reward function --- 
 # Replace this with a task-specific reward for memory management.
 # Example here: reward outputs that include the keyword "MEMORY"
 # and keep responses concise.
-
 
 def compute_reward(text: str) -> float:
     reward = 0.0
@@ -135,6 +134,8 @@ def main() -> None:
     prompts = load_prompts(cfg.prompt_file)
     dataset = build_dataset(prompts)
 
+    
+    # Change after fully implementing GRPO
     ppo_config = PPOConfig(
         learning_rate=cfg.learning_rate,
         batch_size=cfg.batch_size,
@@ -147,6 +148,7 @@ def main() -> None:
         tokenizer=tokenizer,
         dataset=dataset,
     )
+    # -------------------------------------
 
     step = 0
     while step < cfg.max_steps:
