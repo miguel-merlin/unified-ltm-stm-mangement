@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import chromadb
 
-from .embeddings import EmbeddingProvider, SentenceTransformerEmbedding
+from hermes.embeddings import EmbeddingProvider, SentenceTransformerEmbedding
 
 
 def _now_iso() -> str:
@@ -157,6 +157,23 @@ class ShortTermMemory:
             return "STM is empty."
         head = [item["content"] for item in self._items[-5:]]
         return " | ".join(head)
+
+    @property
+    def _buffer(self) -> List[str]:
+        """Alias returning item text list for reward computation."""
+        return [item["content"] for item in self._items]
+
+    def retrieve(self, query: str, k: int = 3) -> List[str]:
+        """Public alias for retrieve_memory (used by agent.py stm_tool)."""
+        return self.retrieve_memory(query, k=k)
+
+    def filter(self, keyword: str) -> List[str]:
+        """Public alias for filter_context (used by agent.py stm_tool)."""
+        return self.filter_context(keyword)
+
+    def summary(self) -> str:
+        """Public alias for summary_context (used by agent.py stm_tool)."""
+        return self.summary_context()
 
 
 

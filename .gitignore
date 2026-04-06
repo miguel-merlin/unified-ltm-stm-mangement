@@ -4,3 +4,6 @@ venv/
 .venv/
 # Ignore Python bytecode
 __pycache__/
+outputs
+hermes_agemem.egg-info
+.pytest_cache

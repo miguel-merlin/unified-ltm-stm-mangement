@@ -1,14 +1,30 @@
-numpy>=2.4.2
-torch==2.10.0
-torchvision==0.25.0
-torchaudio==2.10.0
+# AgeMem dependencies
+# Paper models: Qwen/Qwen2.5-7B-Instruct, Qwen/Qwen3-4B-Instruct
 
+# Core deep learning
+numpy>=1.24
+torch>=2.1
+torchvision>=0.16
+torchaudio>=2.1
 
-transformers==5.1.0
-trl==0.27.2
-datasets==4.5.0
-langchain==0.3.27
-langchain-openai==0.3.33
+# Hugging Face ecosystem
+transformers>=4.43
+trl>=0.10
+datasets>=2.20
+accelerate>=0.30
 
-chromadb==1.5.1
-sentence-transformers==5.2.3
+# Agent / LLM
+langchain>=0.2
+langchain-openai>=0.1
+pydantic>=2.0
+
+# Memory backends
+chromadb>=0.5
+sentence-transformers>=2.7
+
+# Evaluation & plotting
+matplotlib>=3.8
+
+# Optional — install separately:
+#   Logging:    pip install wandb tensorboard
+#   Benchmarks: pip install alfworld scienceworld

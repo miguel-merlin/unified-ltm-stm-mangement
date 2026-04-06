@@ -1,24 +1,33 @@
 """
-Defines the RL training distribution for AgeMem
+Defines the RL training distribution for AgeMem.
 
 Controls:
 - Which facts appear in context
 - Whether distractors are injected
 - What constitutes task success
-- Stage-specific curriculum behavior
+- Stage-specific curriculum behaviour
 
-Future integration:
-- Replace synthetic generators with real benchmarks (ALFWorld, ScienceWorld)
-- Add multi-turn temporal separation (fact ingestion phase -> delayed query)
-- Add long-horizon tasks for stronger LTM pressure
+Three-stage episode structure (from Section 3.3):
+  Stage 1 (LTM construction)  — agent sees casual facts and must store them
+  Stage 2 (STM noise)         — distractors injected; agent must filter/compress
+  Stage 3 (Unified)           — query issued; agent retrieves from LTM + manages STM
 
-+ Need to reporcess data so that it suits training with GRPO policy
+Integration notes:
+  - For production training, replace synthetic generators with real HotpotQA
+    (see hermes/loaders/hotpotqa_loader.py).
+  - Add longer-horizon tasks (ALFWorld, SciWorld) for curriculum extension.
 """
 
 from __future__ import annotations
+
 import random
 from typing import Any, Dict, List, Tuple
+
 from datasets import Dataset
+
+# ---------------------------------------------------------------------------
+# System prompt / tool schema shown to the model
+# ---------------------------------------------------------------------------
 
 TRACE_INSTRUCTIONS = """You are a memory-management agent.
 
@@ -45,17 +54,54 @@ Rules:
 - Use tools deliberately; avoid unnecessary writes.
 """
 
-# Import before training 
-DISTRACTORS = []
-NAMES = []
-PREFS = []
-CITIES = []
+# ---------------------------------------------------------------------------
+# Vocabulary for synthetic episode generation
+# ---------------------------------------------------------------------------
+
+NAMES: List[str] = [
+    "Alice", "Bob", "Carlos", "Diana", "Ethan", "Fiona", "George", "Hannah",
+    "Ivan", "Julia", "Kevin", "Laura", "Marcus", "Nina", "Oscar", "Priya",
+    "Quinn", "Rachel", "Samuel", "Tara", "Uma", "Victor", "Wendy", "Xavier",
+    "Yasmine", "Zoe",
+]
+
+PREFS: List[str] = [
+    "coffee", "tea", "sparkling water", "orange juice", "green tea",
+    "black coffee", "hot chocolate", "lemonade", "chai", "espresso",
+    "matcha latte", "herbal tea", "cold brew", "ginger ale", "cappuccino",
+]
+
+CITIES: List[str] = [
+    "New York", "London", "Tokyo", "Paris", "Sydney", "Berlin", "Toronto",
+    "Barcelona", "Singapore", "Amsterdam", "Seoul", "Dubai", "Mumbai",
+    "São Paulo", "Chicago", "Vienna", "Zurich", "Stockholm", "Melbourne",
+    "Copenhagen", "Prague", "Warsaw", "Helsinki", "Lisbon", "Athens",
+]
+
+DISTRACTORS: List[str] = [
+    "Distractor: The weather today is partly cloudy with a chance of rain.",
+    "Distractor: Stock markets rose 0.3% in early trading on Tuesday.",
+    "Distractor: A new species of deep-sea fish was discovered near Greenland.",
+    "Distractor: The annual tech conference has been postponed to next quarter.",
+    "Distractor: Scientists have confirmed water ice deposits at the lunar south pole.",
+    "Distractor: The recipe calls for two cups of flour and one teaspoon of vanilla.",
+    "Distractor: Traffic congestion increased 12% in major cities last year.",
+    "Distractor: The film festival received over 4,000 submissions this season.",
+    "Distractor: A local startup raised $30 million in Series B funding.",
+    "Distractor: Researchers published findings on migratory bird patterns.",
+    "Distractor: The sports team won their third consecutive championship.",
+    "Distractor: Municipal authorities plan to expand the public transit network.",
+    "Distractor: A new art exhibit opened at the downtown gallery this weekend.",
+    "Distractor: Temperature records were broken in several European capitals.",
+    "Distractor: Quarterly earnings reports exceeded analyst expectations.",
+]
+
+# ---------------------------------------------------------------------------
+# Prompt builder
+# ---------------------------------------------------------------------------
 
 def _build_prompt(stage: str, context_lines: List[str], user_query: str) -> str:
-    """
-    Build a single prompt that encourages the right behavior per stage.
-    We keep the same JSONL tool schema across stages, only the goal changes.
-    """
+    """Build a stage-specific prompt with JSONL tool instructions."""
     stage_hint = {
         "stage1_ltm": (
             "Goal: Learn Long-Term Memory (LTM).\n"
@@ -65,7 +111,7 @@ def _build_prompt(stage: str, context_lines: List[str], user_query: str) -> str:
         ),
         "stage2_stm_noise": (
             "Goal: Learn Short-Term Memory (STM) management under distractors.\n"
-            "- Filter/summary/discard distractors.\n"
+            "- Filter/summary/discard distractors from STM.\n"
             "- Keep only task-relevant info in STM.\n"
             "- Use LTM minimally."
         ),
@@ -87,34 +133,70 @@ def _build_prompt(stage: str, context_lines: List[str], user_query: str) -> str:
         f"USER_QUERY: {user_query}\n"
     )
 
+
+# ---------------------------------------------------------------------------
+# Episode samplers
+# ---------------------------------------------------------------------------
+
 def _sample_fact_episode(r: random.Random) -> Tuple[List[str], List[str], str]:
+    """Sample a single-person preference episode."""
     name = r.choice(NAMES)
     pref = r.choice(PREFS)
     city = r.choice(CITIES)
 
-    # Facts appear in the context:
-    context = [f"My name is {name}.", f"I prefer {pref}.", f"I live in {city}."]
-
-    # The final answer must include:
+    context = [
+        f"My name is {name}.",
+        f"I prefer {pref}.",
+        f"I live in {city}.",
+    ]
     required = [pref.lower(), city.lower()]
     user_query = "What drink do I prefer and what city do I live in?"
     return context, required, user_query
 
-def _inject_distractors(r: random.Random, context: List[str], min_k: int = 3, max_k: int = 5) -> List[str]:
+
+def _sample_multi_person_episode(r: random.Random) -> Tuple[List[str], List[str], str]:
+    """Sample an episode with two people to increase retrieval pressure."""
+    names = r.sample(NAMES, 2)
+    prefs = r.sample(PREFS, 2)
+    cities = r.sample(CITIES, 2)
+
+    context = [
+        f"{names[0]} prefers {prefs[0]} and lives in {cities[0]}.",
+        f"{names[1]} prefers {prefs[1]} and lives in {cities[1]}.",
+    ]
+    # Query about the first person only
+    required = [prefs[0].lower(), cities[0].lower()]
+    user_query = f"What drink does {names[0]} prefer and where do they live?"
+    return context, required, user_query
+
+
+def _inject_distractors(
+    r: random.Random, context: List[str], min_k: int = 3, max_k: int = 5
+) -> List[str]:
+    """Interleave random distractors into the context list."""
     ctx = list(context)
     k = r.randint(min_k, max_k)
-    for i in range(k):
+    for _ in range(k):
         ctx.insert(r.randint(0, len(ctx)), r.choice(DISTRACTORS))
     return ctx
+
+
+# ---------------------------------------------------------------------------
+# Dataset builders
+# ---------------------------------------------------------------------------
 
 def build_examples(stage: str, n: int, seed: int = 0) -> List[Dict[str, Any]]:
     r = random.Random(seed)
     examples: List[Dict[str, Any]] = []
 
     for i in range(n):
-        context, required, user_query = _sample_fact_episode(r)
+        # Alternate between single-person and multi-person episodes
+        if i % 3 == 2:
+            context, required, user_query = _sample_multi_person_episode(r)
+        else:
+            context, required, user_query = _sample_fact_episode(r)
 
-        # Stage-specific context shaping:
+        # Stage-specific context shaping
         if stage in ("stage2_stm_noise", "stage3_unified"):
             context = _inject_distractors(r, context)
 
@@ -131,5 +213,7 @@ def build_examples(stage: str, n: int, seed: int = 0) -> List[Dict[str, Any]]:
 
     return examples
 
+
 def build_dataset(stage: str, n: int, seed: int = 0) -> Dataset:
+    """Build a HuggingFace Dataset of GRPO training examples."""
     return Dataset.from_list(build_examples(stage=stage, n=n, seed=seed))
