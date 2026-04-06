@@ -188,15 +188,19 @@ def hermes_trace_reward(completions: List[str], **kwargs) -> List[float]:
 
     Returns a list of scalar rewards, one per completion.
     """
-    required: Optional[List[str]] = kwargs.get("required")
-    stage: str = kwargs.get("stage", "stage3_unified")
+    required_arg = kwargs.get("required")
+    stage_arg = kwargs.get("stage")
 
     # Reward weights (uniform as per paper Appendix C.4)
     w_task = w_context = w_memory = 1.0 / 3.0
 
     rewards: List[float] = []
 
-    for completion in completions:
+    for i, completion in enumerate(completions):
+        # Handle batched kwargs from GRPOTrainer or single value from tests
+        req = required_arg[i] if isinstance(required_arg, list) and len(required_arg) == len(completions) else required_arg
+        stg = stage_arg[i] if isinstance(stage_arg, list) and len(stage_arg) == len(completions) else (stage_arg or "stage3_unified")
+
         stm = ShortTermMemory()
         ltm = LongTermMemory()
         tools = HermesToolAPI(stm, ltm)
@@ -224,7 +228,8 @@ def hermes_trace_reward(completions: List[str], **kwargs) -> List[float]:
             tool = obj.get("tool")
             action = obj.get("action", "")
             content = str(obj.get("content", ""))
-            k = int(obj.get("k", 5))
+            k_val = obj.get("k", 5)
+            k = int(k_val) if k_val is not None else 5
 
             if tool == "stm":
                 tool_calls += 1
@@ -249,22 +254,22 @@ def hermes_trace_reward(completions: List[str], **kwargs) -> List[float]:
                     key=str(obj.get("key", "")),
                     k=k,
                     tags=obj.get("tags"),
-                    importance=float(obj.get("importance", 0.0)),
+                    importance=float(obj.get("importance", 0.0)) if obj.get("importance") is not None else 0.0,
                     meta=obj.get("meta"),
                     tags_any=obj.get("tags_any"),
                     meta_filter=obj.get("meta_filter"),
                 )
 
         # Compute the three sub-rewards
-        r_task = _r_task(final_answer, required)
+        r_task = _r_task(final_answer, req)
         r_context = _r_context(stm, tool_calls, stm_tool_counts, status)
         r_memory = _r_memory(
-            ltm, ltm_writes, ltm_maintenance_ops, required, final_answer
+            ltm, ltm_writes, ltm_maintenance_ops, req, final_answer
         )
         stm_text = " ".join(stm._buffer).lower()
         n_ltm = len(ltm.snapshot())
         penalty = _p_penalty(
-            tool_calls, ltm_writes, stm_text, n_ltm, stage
+            tool_calls, ltm_writes, stm_text, n_ltm, stg
         )
 
         total = w_task * r_task + w_context * r_context + w_memory * r_memory + penalty

@@ -22,9 +22,8 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import random
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import List, Optional
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -56,11 +55,14 @@ class TrainConfig:
     # GRPO hyperparameters (from Appendix C.4)
     max_steps: int = 200
     per_device_train_batch_size: int = 1
-    num_generations: int = 8           # K rollouts per task (paper uses K=8)
+    num_generations: int = 4           # K rollouts (paper uses 8; must be >=2. Use 8 with large GPU)
     learning_rate: float = 5e-7
-    max_new_tokens: int = 256
-    max_prompt_length: int = 1024
-    kl_coeff: float = 0.1              # β KL divergence coefficient
+    max_completion_length: int = 256   # max_new_tokens in TRL 1.0.0
+    kl_coeff: float = 0.1              # β KL divergence coefficient (beta in TRL 1.0.0)
+
+    # Memory optimization
+    use_peft: bool = True              # Use LoRA to save memory
+    gradient_checkpointing: bool = True # Save memory at the cost of speed
 
     # Logging
     log_wandb: bool = False
@@ -136,9 +138,26 @@ def main() -> None:
 
     model = AutoModelForCausalLM.from_pretrained(
         cfg.model_name,
-        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+        dtype=torch.bfloat16 if device == "cuda" else torch.float32,
         device_map="auto" if device == "cuda" else None,
+        # Load in 8bit if PEFT is enabled to save more VRAM, though 16bit is standard.
+        # But for OOM safety, we stick to bfloat16 for PEFT so as not to complicate dependency on bitsandbytes unless necessary.
     )
+
+    peft_config = None
+    if cfg.use_peft:
+        try:
+            from peft import LoraConfig
+            peft_config = LoraConfig(
+                r=16,
+                lora_alpha=32,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                task_type="CAUSAL_LM",
+                bias="none",
+            )
+            print("[AgeMem] Enabled PEFT (LoRA) for memory optimization.")
+        except ImportError:
+            print("[AgeMem] WARNING: peft not installed. Proceeding without LoRA.")
 
     # ---- Build dataset ----
     dataset = build_grpo_dataset(cfg)
@@ -174,19 +193,24 @@ def main() -> None:
     )
 
     # ---- GRPO config ----
+    # TRL 1.0.0 constraint: generation_batch_size % num_generations == 0
+    # and num_generations >= 2. Set generation_batch_size = num_generations
+    # so the constraint is always satisfied regardless of batch size.
+    n_gen = max(cfg.num_generations, 2)  # TRL requires >= 2
+
     grpo_config = GRPOConfig(
         output_dir=cfg.output_dir,
         learning_rate=cfg.learning_rate,
         max_steps=cfg.max_steps,
         per_device_train_batch_size=cfg.per_device_train_batch_size,
-        num_generations=cfg.num_generations,
-        max_new_tokens=cfg.max_new_tokens,
-        max_prompt_length=cfg.max_prompt_length,
-        kl_coef=cfg.kl_coeff,
+        num_generations=n_gen,
+        generation_batch_size=n_gen,     # must be divisible by num_generations
+        max_completion_length=cfg.max_completion_length,
+        beta=cfg.kl_coeff,
         logging_steps=cfg.log_every_n_steps,
         save_steps=max(cfg.max_steps // 5, 1),
-        # Disable default W&B/TensorBoard inside TRL (we manage logging ourselves)
         report_to=[],
+        gradient_checkpointing=cfg.gradient_checkpointing,
     )
 
     # ---- Trainer ----
@@ -194,8 +218,9 @@ def main() -> None:
         model=model,
         args=grpo_config,
         train_dataset=dataset,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,      # TRL 1.0.0: renamed from 'tokenizer'
         reward_funcs=[hermes_trace_reward],
+        peft_config=peft_config,
     )
 
     # Inject logger callbacks

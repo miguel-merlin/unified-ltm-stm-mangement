@@ -28,7 +28,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from hermes.memory import LongTermMemory, ShortTermMemory
 from hermes.tool_api import HermesToolAPI
 from hermes.trace import parse_jsonl_trace
-from hermes.rewards import _contains_all
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +113,8 @@ def evaluate_completion(
         tool = obj.get("tool")
         action = obj.get("action", "")
         content = str(obj.get("content", ""))
-        k = int(obj.get("k", 5))
+        k_val = obj.get("k", 5)
+        k = int(k_val) if k_val is not None else 5
         if tool == "stm":
             tool_calls += 1
             tools.stm_tool(action, content=content, k=k)
@@ -129,7 +129,7 @@ def evaluate_completion(
                 key=str(obj.get("key", "")),
                 k=k,
                 tags=obj.get("tags"),
-                importance=float(obj.get("importance", 0.0)),
+                importance=float(obj.get("importance", 0.0)) if obj.get("importance") is not None else 0.0,
                 meta=obj.get("meta"),
             )
 
@@ -195,7 +195,13 @@ def run_hotpotqa_eval(
         prompt = example["prompt"]
         answer = example.get("answer", "")
 
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).to(device)
+        messages = [
+            {"role": "system", "content": "You are a memory-management agent."},
+            {"role": "user", "content": prompt},
+        ]
+        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+        inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=1024).to(device)
         with torch.no_grad():
             output_ids = model.generate(
                 **inputs,
