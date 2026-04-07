@@ -31,6 +31,30 @@ from hermes.trace import parse_jsonl_trace
 
 
 # ---------------------------------------------------------------------------
+# LTM pre-seeding helper (paper Section 4.1)
+# ---------------------------------------------------------------------------
+
+def _seed_ltm_from_facts(facts: List[str]) -> LongTermMemory:
+    """Create and populate a LongTermMemory with supporting facts.
+
+    Mirrors the paper setup: before asking the agent a question, the
+    supporting paragraphs are written into LTM so the agent can retrieve them.
+    Each sentence gets its own record tagged as 'supporting_fact'.
+    """
+    ltm = LongTermMemory()
+    for fact in facts:
+        if not fact.strip():
+            continue
+        ltm.add(
+            content=fact.strip(),
+            tags=["supporting_fact"],
+            importance=1.0,
+            meta={"source": "hotpotqa_supporting"},
+        )
+    return ltm
+
+
+# ---------------------------------------------------------------------------
 # LLM-as-a-judge helper (rule-based fallback when no API key)
 # ---------------------------------------------------------------------------
 
@@ -99,10 +123,19 @@ def evaluate_completion(
     completion: str,
     gold_answer: str,
     gold_facts: Optional[List[str]] = None,
+    preseeded_ltm: Optional[LongTermMemory] = None,
 ) -> Dict[str, Any]:
-    """Parse and execute one model completion; return evaluation metrics."""
+    """Parse and execute one model completion; return evaluation metrics.
+
+    Args:
+        completion:     Raw model output (JSONL trace string).
+        gold_answer:    Ground-truth answer string for judge scoring.
+        gold_facts:     Gold supporting sentences for Memory Quality scoring.
+        preseeded_ltm:  Pre-populated LongTermMemory object (paper eval setup).
+                        When provided the agent starts with facts already in LTM.
+    """
     stm = ShortTermMemory()
-    ltm = LongTermMemory()
+    ltm = preseeded_ltm if preseeded_ltm is not None else LongTermMemory()
     tools = HermesToolAPI(stm, ltm)
 
     trace, final_answer, status = parse_jsonl_trace(completion, max_lines=20)
@@ -114,7 +147,7 @@ def evaluate_completion(
         action = obj.get("action", "")
         content = str(obj.get("content", ""))
         k_val = obj.get("k", 5)
-        k = int(k_val) if k_val is not None else 5
+        k = max(1, int(k_val) if k_val is not None else 5)  # ChromaDB requires k >= 1
         if tool == "stm":
             tool_calls += 1
             tools.stm_tool(action, content=content, k=k)
@@ -161,10 +194,14 @@ def run_hotpotqa_eval(
     max_samples: int = 200,
     seed: int = 42,
     output_json: Optional[str] = None,
+    preseed_ltm: bool = True,
 ) -> Dict[str, Any]:
     """Run evaluation on HotpotQA validation set.
 
-    Generates completions using the trained model, then scores them.
+    When preseed_ltm=True (default, paper-replicating mode), the supporting
+    fact sentences for each question are written into LTM *before* the agent
+    generates its trace.  This exactly matches the paper's evaluation setup
+    where the agent must retrieve from a pre-populated memory store.
     """
     from hermes.loaders.hotpotqa_loader import build_hotpotqa_dataset
 
@@ -194,6 +231,12 @@ def run_hotpotqa_eval(
     for i, example in enumerate(dataset):
         prompt = example["prompt"]
         answer = example.get("answer", "")
+        supporting_facts = example.get("supporting_facts_raw", [])
+
+        # --- Paper setup: seed LTM with supporting facts before generation ---
+        preseeded_ltm = None
+        if preseed_ltm and supporting_facts:
+            preseeded_ltm = _seed_ltm_from_facts(supporting_facts)
 
         messages = [
             {"role": "system", "content": "You are a memory-management agent."},
@@ -217,7 +260,8 @@ def run_hotpotqa_eval(
         metrics = evaluate_completion(
             completion=completion,
             gold_answer=answer,
-            gold_facts=None,
+            gold_facts=supporting_facts,
+            preseeded_ltm=preseeded_ltm,
         )
         metrics["example_id"] = i
         metrics["question"] = example.get("question", "")
@@ -238,6 +282,7 @@ def run_hotpotqa_eval(
         "model": model_name,
         "split": split,
         "n_examples": len(all_results),
+        "preseed_ltm": preseed_ltm,
         "llm_judge": round(sum(judge_scores) / max(len(judge_scores), 1), 4),
         "memory_quality": round(sum(mq_scores) / max(len(mq_scores), 1), 4),
         "avg_token_proxy": round(sum(token_proxies) / max(len(token_proxies), 1), 1),
@@ -272,6 +317,12 @@ def main() -> None:
     parser.add_argument("--max_samples", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output_json", type=str, default="outputs/eval_results.json")
+    parser.add_argument(
+        "--no_preseed_ltm", dest="preseed_ltm", action="store_false",
+        help="Disable LTM pre-seeding (ablation mode). Default: LTM is pre-seeded "
+             "with gold supporting facts before each question (paper setup).",
+    )
+    parser.set_defaults(preseed_ltm=True)
     args = parser.parse_args()
 
     if args.eval_hotpotqa:
@@ -281,6 +332,7 @@ def main() -> None:
             max_samples=args.max_samples,
             seed=args.seed,
             output_json=args.output_json,
+            preseed_ltm=args.preseed_ltm,
         )
     else:
         print("No evaluation task selected. Use --eval_hotpotqa to evaluate.")

@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from datasets import Dataset, load_dataset
 
-from hermes.tasks import DISTRACTORS, TRACE_INSTRUCTIONS, _inject_distractors
+from hermes.tasks import TRACE_INSTRUCTIONS, _inject_distractors
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +126,9 @@ def _hotpotqa_to_example(
         "question": question,
         "answer": answer,
         "task_id": str(row.get("id", "")),
+        # Supporting sentences (title + text) for LTM pre-seeding at eval time.
+        # These are exactly the k sentences from the gold supporting paragraphs.
+        "supporting_facts_raw": supporting_lines,
     }
 
 

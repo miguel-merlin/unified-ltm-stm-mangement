@@ -229,7 +229,7 @@ def hermes_trace_reward(completions: List[str], **kwargs) -> List[float]:
             action = obj.get("action", "")
             content = str(obj.get("content", ""))
             k_val = obj.get("k", 5)
-            k = int(k_val) if k_val is not None else 5
+            k = max(1, int(k_val) if k_val is not None else 5)  # ChromaDB requires k >= 1
 
             if tool == "stm":
                 tool_calls += 1
